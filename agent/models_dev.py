@@ -173,6 +173,22 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "ollama-cloud": "ollama-cloud",
 }
 
+# Secondary models.dev provider IDs to consult when the primary lookup misses
+# the requested model. Used for providers that share an underlying catalog
+# with a sibling provider but list models under different IDs.
+#
+# Example: ``kimi-coding`` (Moonshot's Code Plan endpoint) maps to
+# ``kimi-for-coding`` in models.dev, which only enumerates the coding-plan
+# slugs (``k2p6``, ``k2p5``, ``kimi-k2-thinking``). The same physical models
+# are listed under ``moonshotai`` with their public IDs (``kimi-k2.6``,
+# ``kimi-k2.5``, …). Falling back here lets ``kimi-coding`` + ``kimi-k2.6``
+# resolve to Moonshot's authoritative 262K window instead of dropping to
+# OpenRouter, whose aggregator entry reports a 32K free-tier value.
+_PROVIDER_MODELS_DEV_FALLBACKS: Dict[str, Tuple[str, ...]] = {
+    "kimi-coding": ("moonshotai",),
+    "kimi-coding-cn": ("moonshotai-cn",),
+}
+
 # Reverse mapping: models.dev → Hermes (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
@@ -254,34 +270,44 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
 
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
+    Consults ``_PROVIDER_MODELS_DEV_FALLBACKS`` when the primary models.dev
+    provider lists the model under a different ID (e.g. kimi-for-coding's
+    ``k2p6`` vs moonshotai's ``kimi-k2.6``).
     """
-    mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
-    if not mdev_provider_id:
+    primary = PROVIDER_TO_MODELS_DEV.get(provider)
+    if not primary:
         return None
+
+    candidate_ids: List[str] = [primary]
+    for fallback in _PROVIDER_MODELS_DEV_FALLBACKS.get(provider, ()):
+        if fallback not in candidate_ids:
+            candidate_ids.append(fallback)
 
     data = fetch_models_dev()
-    provider_data = data.get(mdev_provider_id)
-    if not isinstance(provider_data, dict):
-        return None
-
-    models = provider_data.get("models", {})
-    if not isinstance(models, dict):
-        return None
-
-    # Exact match
-    entry = models.get(model)
-    if entry:
-        ctx = _extract_context(entry)
-        if ctx:
-            return ctx
-
-    # Case-insensitive match
     model_lower = model.lower()
-    for mid, mdata in models.items():
-        if mid.lower() == model_lower:
-            ctx = _extract_context(mdata)
+
+    for mdev_provider_id in candidate_ids:
+        provider_data = data.get(mdev_provider_id)
+        if not isinstance(provider_data, dict):
+            continue
+
+        models = provider_data.get("models", {})
+        if not isinstance(models, dict):
+            continue
+
+        # Exact match
+        entry = models.get(model)
+        if entry:
+            ctx = _extract_context(entry)
             if ctx:
                 return ctx
+
+        # Case-insensitive match
+        for mid, mdata in models.items():
+            if mid.lower() == model_lower:
+                ctx = _extract_context(mdata)
+                if ctx:
+                    return ctx
 
     return None
 

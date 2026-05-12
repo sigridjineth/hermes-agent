@@ -156,6 +156,44 @@ class TestLookupModelsDevContext:
         mock_fetch.return_value = {}
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") is None
 
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_kimi_coding_falls_back_to_moonshotai(self, mock_fetch):
+        """models.dev lists kimi-for-coding's models under different IDs
+        (``k2p6``) than the hermes user-facing names (``kimi-k2.6``).  When
+        the primary lookup misses, the sibling ``moonshotai`` provider entry
+        — which uses the public names — should resolve the context window.
+        """
+        mock_fetch.return_value = {
+            "kimi-for-coding": {
+                "id": "kimi-for-coding",
+                "models": {
+                    "k2p6": {"id": "k2p6", "limit": {"context": 262144, "output": 32768}},
+                },
+            },
+            "moonshotai": {
+                "id": "moonshotai",
+                "models": {
+                    "kimi-k2.6": {"id": "kimi-k2.6", "limit": {"context": 262144, "output": 262144}},
+                },
+            },
+        }
+        assert lookup_models_dev_context("kimi-coding", "kimi-k2.6") == 262144
+        # Primary still wins when it has the model
+        assert lookup_models_dev_context("kimi-coding", "k2p6") == 262144
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_kimi_coding_cn_falls_back_to_moonshotai_cn(self, mock_fetch):
+        mock_fetch.return_value = {
+            "kimi-for-coding": {"id": "kimi-for-coding", "models": {}},
+            "moonshotai-cn": {
+                "id": "moonshotai-cn",
+                "models": {
+                    "kimi-k2.6": {"id": "kimi-k2.6", "limit": {"context": 262144, "output": 262144}},
+                },
+            },
+        }
+        assert lookup_models_dev_context("kimi-coding-cn", "kimi-k2.6") == 262144
+
 
 class TestFetchModelsDev:
     @patch("agent.models_dev.requests.get")
